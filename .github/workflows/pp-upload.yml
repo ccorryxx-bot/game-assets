@@ -9,102 +9,129 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Install dependencies
-        run: sudo apt-get install -y jq dnsutils
-
-      - name: Test connectivity to pragmaticplay.net
-        run: |
-          echo "=== DNS Test ==="
-          nslookup static.pragmaticplay.net || echo "DNS FAILED"
-          echo "=== Curl Test (verbose) ==="
-          curl -v --max-time 15 \
-            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36" \
-            -H "Referer: https://www.pragmaticplay.com/" \
-            "https://static.pragmaticplay.net/game_pic/square/vs10farming/vs10farming_en.png" \
-            -o /tmp/test_img.png 2>&1 | head -60
-          echo "File size: $(wc -c < /tmp/test_img.png 2>/dev/null || echo 0) bytes"
-
-      - name: Run PP image upload pipeline
+      - name: Run PP image upload pipeline (Python)
         env:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
-          echo "=== Fetching game list from Supabase ==="
-          GAMES=$(curl -s \
-            -H "apikey: $SUPABASE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_KEY" \
-            "https://xjqrwcsxiaybpztzestb.supabase.co/rest/v1/game_cards?provider_code=eq.pp&image_url=like.*pragmaticplay.net*&select=id,game_code,image_url&limit=500")
+          python3 << 'PYEOF'
+          import urllib.request
+          import urllib.error
+          import json
+          import base64
+          import os
+          import time
 
-          TOTAL=$(echo "$GAMES" | jq length)
-          echo "Found $TOTAL games."
+          SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+          GIT_TOKEN = os.environ["GIT_TOKEN"]
+          GH_REPO = "ccorryxx-bot/game-assets"
 
-          DOWNLOADED=0; UPLOADED=0; SKIPPED=0; DB_UPDATED=0; FAILED=0
+          def fetch_json(url, headers):
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return json.loads(r.read())
 
-          mkdir -p /tmp/pp_images
+          def download_image(url):
+              req = urllib.request.Request(url, headers={
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+                  "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                  "Referer": "https://www.pragmaticplay.com/"
+              })
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  return r.read()
 
-          for i in $(seq 0 $((TOTAL - 1))); do
-            ID=$(echo "$GAMES" | jq -r ".[$i].id")
-            GAME_CODE=$(echo "$GAMES" | jq -r ".[$i].game_code")
-            IMAGE_URL=$(echo "$GAMES" | jq -r ".[$i].image_url")
-            OUT_FILE="/tmp/pp_images/${GAME_CODE}.jpg"
+          def upload_github(game_code, img_bytes):
+              b64 = base64.b64encode(img_bytes).decode()
+              url = f"https://api.github.com/repos/{GH_REPO}/contents/pp/{game_code}.jpg"
+              body = json.dumps({"message": f"feat: add PP game image {game_code}", "content": b64}).encode()
+              req = urllib.request.Request(url, data=body, method="PUT", headers={
+                  "Authorization": f"token {GIT_TOKEN}",
+                  "Accept": "application/vnd.github.v3+json",
+                  "Content-Type": "application/json"
+              })
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return r.getcode()
+              except urllib.error.HTTPError as e:
+                  return e.code
 
-            HTTP_CODE=$(curl -s -o "$OUT_FILE" -w "%{http_code}" \
-              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36" \
-              -H "Accept: image/webp,image/apng,image/*,*/*;q=0.8" \
-              -H "Referer: https://www.pragmaticplay.com/" \
-              --max-time 30 --retry 2 --retry-delay 3 \
-              "$IMAGE_URL" 2>/dev/null)
-            CURL_EXIT=$?
+          def update_db(record_id, game_code, supabase_key):
+              new_url = f"https://cdn.jsdelivr.net/gh/{GH_REPO}@main/pp/{game_code}.jpg"
+              body = json.dumps({"image_url": new_url}).encode()
+              req = urllib.request.Request(
+                  f"https://xjqrwcsxiaybpztzestb.supabase.co/rest/v1/game_cards?id=eq.{record_id}",
+                  data=body, method="PATCH",
+                  headers={
+                      "apikey": supabase_key,
+                      "Authorization": f"Bearer {supabase_key}",
+                      "Content-Type": "application/json",
+                      "Prefer": "return=minimal"
+                  })
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return r.getcode()
+              except urllib.error.HTTPError as e:
+                  return e.code
 
-            if [ "$HTTP_CODE" != "200" ] || [ ! -s "$OUT_FILE" ]; then
-              echo "  FAIL $GAME_CODE [HTTP=$HTTP_CODE exit=$CURL_EXIT]"
-              FAILED=$((FAILED + 1))
-              continue
-            fi
-            DOWNLOADED=$((DOWNLOADED + 1))
+          print("=== Fetching games from Supabase ===")
+          games = fetch_json(
+              "https://xjqrwcsxiaybpztzestb.supabase.co/rest/v1/game_cards"
+              "?provider_code=eq.pp&image_url=like.*pragmaticplay.net*&select=id,game_code,image_url&limit=500",
+              {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+          )
+          print(f"Found {len(games)} games.\n")
 
-            B64=$(base64 -w 0 "$OUT_FILE")
+          stats = {"downloaded": 0, "uploaded": 0, "skipped": 0, "db_updated": 0, "failed": []}
 
-            GH_RESP=$(curl -s -o /tmp/gh_resp.json -w "%{http_code}" \
-              -X PUT "https://api.github.com/repos/ccorryxx-bot/game-assets/contents/pp/${GAME_CODE}.jpg" \
-              -H "Authorization: token $GIT_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Content-Type: application/json" \
-              -d "{\"message\":\"feat: add PP game image ${GAME_CODE}\",\"content\":\"${B64}\"}" 2>/dev/null)
+          for idx, game in enumerate(games):
+              gid = game["id"]
+              code = game["game_code"]
+              url = game["image_url"]
 
-            if [ "$GH_RESP" = "201" ]; then
-              UPLOADED=$((UPLOADED + 1))
-              echo "  OK $GAME_CODE [uploaded]"
-            elif [ "$GH_RESP" = "422" ]; then
-              SKIPPED=$((SKIPPED + 1))
-              echo "  SKIP $GAME_CODE [exists]"
-            else
-              echo "  FAIL $GAME_CODE [github HTTP=$GH_RESP]"
-              FAILED=$((FAILED + 1))
-              rm -f "$OUT_FILE"
-              continue
-            fi
+              try:
+                  img = download_image(url)
+                  stats["downloaded"] += 1
+              except Exception as e:
+                  print(f"  FAIL {code} [download]: {e}")
+                  stats["failed"].append({"code": code, "step": "download", "error": str(e)})
+                  continue
 
-            DB_RESP=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
-              "https://xjqrwcsxiaybpztzestb.supabase.co/rest/v1/game_cards?id=eq.${ID}" \
-              -H "apikey: $SUPABASE_KEY" \
-              -H "Authorization: Bearer $SUPABASE_KEY" \
-              -H "Content-Type: application/json" \
-              -H "Prefer: return=minimal" \
-              -d "{\"image_url\":\"https://cdn.jsdelivr.net/gh/ccorryxx-bot/game-assets@main/pp/${GAME_CODE}.jpg\"}" 2>/dev/null)
+              gh_status = None
+              for attempt in range(2):
+                  gh_status = upload_github(code, img)
+                  if gh_status in (201, 422):
+                      break
+                  time.sleep(3)
 
-            [ "$DB_RESP" = "204" ] && DB_UPDATED=$((DB_UPDATED + 1)) || echo "  WARN $GAME_CODE [db=$DB_RESP]"
-            rm -f "$OUT_FILE"
+              if gh_status == 201:
+                  stats["uploaded"] += 1
+                  print(f"  OK {code} [uploaded]")
+              elif gh_status == 422:
+                  stats["skipped"] += 1
+                  print(f"  SKIP {code} [already exists]")
+              else:
+                  print(f"  FAIL {code} [github HTTP {gh_status}]")
+                  stats["failed"].append({"code": code, "step": "github", "error": f"HTTP {gh_status}"})
+                  continue
 
-            DONE=$((DOWNLOADED + FAILED))
-            [ $((DONE % 20)) -eq 0 ] && echo "--- Progress: $DONE/$TOTAL ---"
-          done
+              db_status = update_db(gid, code, SUPABASE_KEY)
+              if db_status == 204:
+                  stats["db_updated"] += 1
+              else:
+                  print(f"  WARN {code} [db HTTP {db_status}]")
 
-          echo ""
-          echo "=== FINAL REPORT ==="
-          echo "Total:      $TOTAL"
-          echo "Downloaded: $DOWNLOADED"
-          echo "Uploaded:   $UPLOADED"
-          echo "Skipped:    $SKIPPED"
-          echo "DB updated: $DB_UPDATED"
-          echo "Failed:     $FAILED"
+              if (idx + 1) % 20 == 0:
+                  print(f"--- Progress: {idx+1}/{len(games)} ---")
+
+          print("\n=== FINAL REPORT ===")
+          print(f"Total:      {len(games)}")
+          print(f"Downloaded: {stats['downloaded']}")
+          print(f"Uploaded:   {stats['uploaded']}")
+          print(f"Skipped:    {stats['skipped']}")
+          print(f"DB updated: {stats['db_updated']}")
+          print(f"Failed:     {len(stats['failed'])}")
+          if stats["failed"]:
+              print("\nFailed list:")
+              for f in stats["failed"]:
+                  print(f"  x {f['code']} [{f['step']}]: {f['error']}")
+          PYEOF
