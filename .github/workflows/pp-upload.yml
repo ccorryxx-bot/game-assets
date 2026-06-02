@@ -10,7 +10,19 @@ jobs:
 
     steps:
       - name: Install dependencies
-        run: sudo apt-get install -y jq
+        run: sudo apt-get install -y jq dnsutils
+
+      - name: Test connectivity to pragmaticplay.net
+        run: |
+          echo "=== DNS Test ==="
+          nslookup static.pragmaticplay.net || echo "DNS FAILED"
+          echo "=== Curl Test (verbose) ==="
+          curl -v --max-time 15 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36" \
+            -H "Referer: https://www.pragmaticplay.com/" \
+            "https://static.pragmaticplay.net/game_pic/square/vs10farming/vs10farming_en.png" \
+            -o /tmp/test_img.png 2>&1 | head -60
+          echo "File size: $(wc -c < /tmp/test_img.png 2>/dev/null || echo 0) bytes"
 
       - name: Run PP image upload pipeline
         env:
@@ -41,10 +53,11 @@ jobs:
               -H "Accept: image/webp,image/apng,image/*,*/*;q=0.8" \
               -H "Referer: https://www.pragmaticplay.com/" \
               --max-time 30 --retry 2 --retry-delay 3 \
-              "$IMAGE_URL" 2>/dev/null || echo "000")
+              "$IMAGE_URL" 2>/dev/null)
+            CURL_EXIT=$?
 
             if [ "$HTTP_CODE" != "200" ] || [ ! -s "$OUT_FILE" ]; then
-              echo "  FAIL $GAME_CODE [download HTTP $HTTP_CODE]"
+              echo "  FAIL $GAME_CODE [HTTP=$HTTP_CODE exit=$CURL_EXIT]"
               FAILED=$((FAILED + 1))
               continue
             fi
@@ -57,8 +70,7 @@ jobs:
               -H "Authorization: token $GIT_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               -H "Content-Type: application/json" \
-              -d "{\"message\":\"feat: add PP game image ${GAME_CODE}\",\"content\":\"${B64}\"}" \
-              2>/dev/null || echo "000")
+              -d "{\"message\":\"feat: add PP game image ${GAME_CODE}\",\"content\":\"${B64}\"}" 2>/dev/null)
 
             if [ "$GH_RESP" = "201" ]; then
               UPLOADED=$((UPLOADED + 1))
@@ -67,24 +79,21 @@ jobs:
               SKIPPED=$((SKIPPED + 1))
               echo "  SKIP $GAME_CODE [exists]"
             else
-              echo "  FAIL $GAME_CODE [github HTTP $GH_RESP]"
+              echo "  FAIL $GAME_CODE [github HTTP=$GH_RESP]"
               FAILED=$((FAILED + 1))
               rm -f "$OUT_FILE"
               continue
             fi
 
-            DB_RESP=$(curl -s -o /dev/null -w "%{http_code}" \
-              -X PATCH \
+            DB_RESP=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
               "https://xjqrwcsxiaybpztzestb.supabase.co/rest/v1/game_cards?id=eq.${ID}" \
               -H "apikey: $SUPABASE_KEY" \
               -H "Authorization: Bearer $SUPABASE_KEY" \
               -H "Content-Type: application/json" \
               -H "Prefer: return=minimal" \
-              -d "{\"image_url\":\"https://cdn.jsdelivr.net/gh/ccorryxx-bot/game-assets@main/pp/${GAME_CODE}.jpg\"}" \
-              2>/dev/null || echo "000")
+              -d "{\"image_url\":\"https://cdn.jsdelivr.net/gh/ccorryxx-bot/game-assets@main/pp/${GAME_CODE}.jpg\"}" 2>/dev/null)
 
-            [ "$DB_RESP" = "204" ] && DB_UPDATED=$((DB_UPDATED + 1)) || echo "  WARN $GAME_CODE [db HTTP $DB_RESP]"
-
+            [ "$DB_RESP" = "204" ] && DB_UPDATED=$((DB_UPDATED + 1)) || echo "  WARN $GAME_CODE [db=$DB_RESP]"
             rm -f "$OUT_FILE"
 
             DONE=$((DOWNLOADED + FAILED))
