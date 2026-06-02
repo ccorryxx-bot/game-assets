@@ -3,8 +3,8 @@
 // Usage: node fix_pp.js
 
 const https = require('https');
-const SERVICE_ROLE_KEY = 'PASTE_SERVICE_ROLE_KEY_HERE';
-const GIT_TOKEN = 'PASTE_GIT_TOKEN_HERE';
+const SERVICE_ROLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhqcXJ3Y3N4aWF5YnB6dHplc3RiIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3ODc3NDEwOSwiZXhwIjoyMDk0MzUwMTA5fQ.AAKLa2QN7vjRJivwlOz0W9z2kWnHwrMamAjvMVbhr4s';
+const GIT_TOKEN = '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';
 
 const SUPABASE_URL = 'https://xjqrwcsxiaybpztzestb.supabase.co';
 const REPO = 'ccorryxx-bot/game-assets';
