@@ -17,10 +17,8 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
-          set -e
-
           echo "=== Fetching game list from Supabase ==="
-          GAMES=$(curl -sf \
+          GAMES=$(curl -s \
             -H "apikey: $SUPABASE_KEY" \
             -H "Authorization: Bearer $SUPABASE_KEY" \
             "https://xjqrwcsxiaybpztzestb.supabase.co/rest/v1/game_cards?provider_code=eq.pp&image_url=like.*pragmaticplay.net*&select=id,game_code,image_url&limit=500")
@@ -28,11 +26,7 @@ jobs:
           TOTAL=$(echo "$GAMES" | jq length)
           echo "Found $TOTAL games."
 
-          DOWNLOADED=0
-          UPLOADED=0
-          SKIPPED=0
-          DB_UPDATED=0
-          FAILED=0
+          DOWNLOADED=0; UPLOADED=0; SKIPPED=0; DB_UPDATED=0; FAILED=0
 
           mkdir -p /tmp/pp_images
 
@@ -43,17 +37,14 @@ jobs:
             OUT_FILE="/tmp/pp_images/${GAME_CODE}.jpg"
 
             HTTP_CODE=$(curl -s -o "$OUT_FILE" -w "%{http_code}" \
-              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
-              -H "Accept: image/avif,image/webp,image/apng,image/*,*/*;q=0.8" \
-              -H "Accept-Language: en-US,en;q=0.9" \
+              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36" \
+              -H "Accept: image/webp,image/apng,image/*,*/*;q=0.8" \
               -H "Referer: https://www.pragmaticplay.com/" \
-              --max-time 30 \
-              --retry 3 \
-              --retry-delay 2 \
-              "$IMAGE_URL")
+              --max-time 30 --retry 2 --retry-delay 3 \
+              "$IMAGE_URL" 2>/dev/null || echo "000")
 
             if [ "$HTTP_CODE" != "200" ] || [ ! -s "$OUT_FILE" ]; then
-              echo "  ✗ $GAME_CODE [download]: HTTP $HTTP_CODE"
+              echo "  FAIL $GAME_CODE [download HTTP $HTTP_CODE]"
               FAILED=$((FAILED + 1))
               continue
             fi
@@ -66,16 +57,17 @@ jobs:
               -H "Authorization: token $GIT_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               -H "Content-Type: application/json" \
-              -d "{\"message\":\"feat: add PP game image ${GAME_CODE}\",\"content\":\"${B64}\"}")
+              -d "{\"message\":\"feat: add PP game image ${GAME_CODE}\",\"content\":\"${B64}\"}" \
+              2>/dev/null || echo "000")
 
             if [ "$GH_RESP" = "201" ]; then
               UPLOADED=$((UPLOADED + 1))
-              echo "  ✓ $GAME_CODE [uploaded]"
+              echo "  OK $GAME_CODE [uploaded]"
             elif [ "$GH_RESP" = "422" ]; then
               SKIPPED=$((SKIPPED + 1))
-              echo "  ~ $GAME_CODE [already exists]"
+              echo "  SKIP $GAME_CODE [exists]"
             else
-              echo "  ✗ $GAME_CODE [github]: HTTP $GH_RESP"
+              echo "  FAIL $GAME_CODE [github HTTP $GH_RESP]"
               FAILED=$((FAILED + 1))
               rm -f "$OUT_FILE"
               continue
@@ -88,15 +80,15 @@ jobs:
               -H "Authorization: Bearer $SUPABASE_KEY" \
               -H "Content-Type: application/json" \
               -H "Prefer: return=minimal" \
-              -d "{\"image_url\":\"https://cdn.jsdelivr.net/gh/ccorryxx-bot/game-assets@main/pp/${GAME_CODE}.jpg\"}")
+              -d "{\"image_url\":\"https://cdn.jsdelivr.net/gh/ccorryxx-bot/game-assets@main/pp/${GAME_CODE}.jpg\"}" \
+              2>/dev/null || echo "000")
 
-            if [ "$DB_RESP" = "204" ]; then
-              DB_UPDATED=$((DB_UPDATED + 1))
-            else
-              echo "  ✗ $GAME_CODE [db_update]: HTTP $DB_RESP"
-            fi
+            [ "$DB_RESP" = "204" ] && DB_UPDATED=$((DB_UPDATED + 1)) || echo "  WARN $GAME_CODE [db HTTP $DB_RESP]"
 
             rm -f "$OUT_FILE"
+
+            DONE=$((DOWNLOADED + FAILED))
+            [ $((DONE % 20)) -eq 0 ] && echo "--- Progress: $DONE/$TOTAL ---"
           done
 
           echo ""
