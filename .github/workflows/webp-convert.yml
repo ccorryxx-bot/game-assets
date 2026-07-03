@@ -1,6 +1,13 @@
-name: Convert JPG to WebP
+name: Convert images to WebP
+
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'pg/**'
+      - 'pp/**'
+      - 'jili/**'
+      - 'jdb/**'
 
 permissions:
   contents: write
@@ -14,25 +21,28 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - run: sudo apt-get install -y webp
+      - name: Install WebP tools
+        run: sudo apt-get install -y webp
 
-      - name: Convert JPGs
+      - name: Convert JPG and PNG to WebP
         run: |
           COUNT=0
-          for f in pg/*.jpg pp/*.jpg jili/*.jpg jdb/*.jpg; do
+          for f in pg/*.jpg pg/*.png pp/*.jpg pp/*.png jili/*.jpg jili/*.png jdb/*.jpg jdb/*.png; do
             [ -f "$f" ] || continue
-            w="${f%.jpg}.webp"
+            base="${f%.*}"
+            w="${base}.webp"
             [ -f "$w" ] && continue
-            cwebp -q 75 -resize 200 267 "$f" -o "$w" -quiet
+            cwebp -q 80 -resize 200 267 "$f" -o "$w" -quiet
             COUNT=$((COUNT+1))
+            echo "  converted: $f → $w"
           done
-          echo "Converted $COUNT files"
+          echo "Total converted: $COUNT files"
 
-      - name: Commit
+      - name: Commit converted files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --staged --quiet && exit 0
-          git commit -m "feat: WebP thumbnails 200x267 q75"
+          git diff --staged --quiet && echo "Nothing to commit" && exit 0
+          git commit -m "feat: WebP thumbnails (200x267, q80)"
           git push
