@@ -1,13 +1,21 @@
 name: Convert JPG to WebP
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   convert:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - run: sudo apt-get install -y webp
+
       - name: Convert JPGs
         run: |
           COUNT=0
@@ -19,13 +27,12 @@ jobs:
             COUNT=$((COUNT+1))
           done
           echo "Converted $COUNT files"
+
       - name: Commit
-        env:
-          TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --staged --quiet && exit 0
           git commit -m "feat: WebP thumbnails 200x267 q75"
-          git push https://x-access-token:${TOKEN}@github.com/ccorryxx-bot/game-assets.git main
+          git push
