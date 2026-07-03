@@ -7,20 +7,25 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GIT_TOKEN }}
       - run: sudo apt-get install -y webp
-      - name: Convert
+      - name: Convert JPGs
         run: |
+          COUNT=0
           for f in pg/*.jpg pp/*.jpg jili/*.jpg jdb/*.jpg; do
             [ -f "$f" ] || continue
             w="${f%.jpg}.webp"
             [ -f "$w" ] && continue
             cwebp -q 75 -resize 200 267 "$f" -o "$w" -quiet
+            COUNT=$((COUNT+1))
           done
-      - run: |
+          echo "Converted $COUNT files"
+      - name: Commit
+        env:
+          TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --staged --quiet && exit 0
-          git commit -m "feat: WebP thumbnails" && git push
+          git commit -m "feat: WebP thumbnails 200x267 q75"
+          git push https://x-access-token:${TOKEN}@github.com/ccorryxx-bot/game-assets.git main
