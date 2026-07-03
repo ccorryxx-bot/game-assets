@@ -1,0 +1,118 @@
+name: Migrate DB image_url to jsDelivr WebP
+
+on:
+  workflow_dispatch:
+    inputs:
+      providers:
+        description: 'Comma-separated providers (e.g. jdb,jili,pg,pp)'
+        default: 'jdb,jili,pg,pp'
+        required: true
+      dry_run:
+        description: 'Dry run — print changes without updating DB'
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Migrate image_url to jsDelivr WebP
+        env:
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          PROVIDERS: ${{ github.event.inputs.providers }}
+        run: |
+          node << 'EOF'
+          const SB_URL  = 'https://xjqrwcsxiaybpztzestb.supabase.co';
+          const KEY     = process.env.SUPABASE_KEY;
+          const DRY     = process.env.DRY_RUN === 'true';
+          const PROVIDERS = (process.env.PROVIDERS || 'jdb,jili,pg,pp')
+            .split(',').map(s => s.trim()).filter(Boolean);
+          const CDN_BASE = 'https://cdn.jsdelivr.net/gh/ccorryxx-bot/game-assets@main';
+
+          const sbHeaders = {
+            'apikey': KEY,
+            'Authorization': `Bearer ${KEY}`,
+            'Content-Type': 'application/json',
+          };
+
+          async function migrateProvider(provider) {
+            console.log(`\n=== ${provider.toUpperCase()} ===`);
+
+            // Fetch all games not yet on jsDelivr for this provider
+            const url = `${SB_URL}/rest/v1/game_cards`
+              + `?provider_code=eq.${provider}`
+              + `&image_url=not.like.*cdn.jsdelivr.net*`
+              + `&select=id,game_code,image_url`
+              + `&limit=2000`;
+
+            const res = await fetch(url, { headers: sbHeaders });
+            const games = await res.json();
+            if (!Array.isArray(games)) {
+              console.log(`  ERROR:`, JSON.stringify(games));
+              return { provider, total: 0, updated: 0, failed: 0 };
+            }
+            console.log(`  ${games.length} games need migration`);
+
+            let updated = 0, failed = 0;
+            for (const game of games) {
+              const newUrl = `${CDN_BASE}/${provider}/${game.game_code}.webp`;
+
+              if (DRY) {
+                console.log(`  DRY  ${game.game_code}`);
+                console.log(`       ${game.image_url}`);
+                console.log(`    →  ${newUrl}`);
+                updated++;
+                continue;
+              }
+
+              const patch = await fetch(
+                `${SB_URL}/rest/v1/game_cards?id=eq.${game.id}`,
+                {
+                  method: 'PATCH',
+                  headers: { ...sbHeaders, 'Prefer': 'return=minimal' },
+                  body: JSON.stringify({ image_url: newUrl })
+                }
+              );
+
+              if (patch.status === 204) {
+                updated++;
+              } else {
+                const body = await patch.text();
+                console.log(`  FAIL ${game.game_code}: HTTP ${patch.status} — ${body}`);
+                failed++;
+              }
+            }
+            return { provider, total: games.length, updated, failed };
+          }
+
+          (async () => {
+            console.log(`Mode     : ${DRY ? '🔍 DRY RUN (no DB changes)' : '🚀 LIVE UPDATE'}`);
+            console.log(`Providers: ${PROVIDERS.join(', ')}`);
+            console.log(`CDN base : ${CDN_BASE}`);
+
+            const results = [];
+            for (const p of PROVIDERS) {
+              results.push(await migrateProvider(p));
+            }
+
+            console.log('\n=== FINAL SUMMARY ===');
+            let totalUpdated = 0, totalFailed = 0;
+            for (const r of results) {
+              const status = r.failed > 0 ? '⚠' : '✓';
+              console.log(`  ${status} ${r.provider}: ${r.updated}/${r.total} updated, ${r.failed} failed`);
+              totalUpdated += r.updated;
+              totalFailed  += r.failed;
+            }
+            console.log(`  TOTAL : ${totalUpdated} updated, ${totalFailed} failed`);
+            if (totalFailed > 0) process.exit(1);
+          })();
+          EOF
